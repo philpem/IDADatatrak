@@ -127,8 +127,9 @@ def load_file(li, neflags, format):
 	idaapi.set_processor_type("68000", SETPROC_ALL | SETPROC_FATAL)
 
 	# Add segments
-	idaapi.add_segm(0, 0x000000, 0x0FFFFF, "ROM", "CODE")		# TODO validate ROM area
+	idaapi.add_segm(0, 0x000000, 0x03FFFF, "ROM", "CODE")		# TODO validate ROM area
 	idaapi.add_segm(0, 0x200000, 0x21FFFF, "RAM", "DATA")		# TODO validate RAM area
+	idaapi.add_segm(0, 0x220000, 0x23FFFF, "RAM2", "DATA")		# TODO validate this, it's here just to fill space
 	idaapi.add_segm(0, 0x240000, 0x2400FF, "IO_ADC", "DATA")	# A/D converter
 	idaapi.add_segm(0, 0x240100, 0x2401FF, "IO_UNK_01", "DATA")	# 
 	idaapi.add_segm(0, 0x240200, 0x2402FF, "IO_RFPHA", "DATA")	# RF phase detector
@@ -147,11 +148,64 @@ def load_file(li, neflags, format):
 	# Seek back to start of file, read the file into memory
 	li.seek(0)
 	file_data = li.read(size)
-	idaapi.mem2base(file_data, 0, 0x100000)
+	idaapi.mem2base(file_data, 0, size)	# data,start,end
 	
 	do_68k_vectors()
 
-	# Declare data pointed at by vectors to be code
+
+	# Get the initial program counter
+	initPC = struct.unpack('>L', bytearray(file_data[4:8]))[0]
+
+	# Hunt down the DATA segment initialiser, starting at the reset vector
+	pattern = [
+			0x41, 0xF9, 0x00, 0x20, 0x00, 0x00,			# LEA    (0x200000).L, A0     ; start of dseg in RAM
+			0x20, 0x3C, 0x00, None, None, None,			# MOVE.L #EndOfDataSeg, D0    ; end of dseg in RAM
+			0x90, 0x88,									# SUB.L  A0, D0               ; D0 = D0 - A0
+			0x43, 0xF9, 0x00, None, None, None,			# LEA    (StartOfData), A1    ; start of dseg initialisation data
+			0x53, 0x80,									# SUBQ.L #1, D0               ; D0 --
+			0x10, 0xD9,									# MOVE.B (A1)+, (A0)+         ; *a0++ = *a1++
+			0x51, 0xC8, 0xFF, 0xFC						# DBF    D0, $-2              ; decrement d0, branch if >= 0
+			]
+	sh_reg = [0x00]*len(pattern)
+
+	for addr in range(initPC, initPC + 0x100):
+		# shift in next byte
+		sh_reg = sh_reg[1:]
+		sh_reg.append(ord(file_data[addr]))
+
+		# check if we've found a match
+		match = True
+		for i in range(len(pattern)):
+			if pattern[i] is not None and pattern[i] != sh_reg[i]:
+				match = False
+				break
+
+		# exit the search loop if we found a match
+		if match:
+			break
+
+	if match:
+		# If we've exited the loop and have a match, fish the DSEG addresses
+		# out of the instruction parameters.
+		dsegRamStart = struct.unpack(">L", bytearray(sh_reg[2:6]))[0]
+		dsegRamEnd   = struct.unpack(">L", bytearray(sh_reg[8:12]))[0]
+		dsegRomStart = struct.unpack(">L", bytearray(sh_reg[16:20]))[0]
+
+		print("DSEG RAM Start %08X" % dsegRamStart)
+		print("DSEG RAM End   %08X" % dsegRamEnd)
+		print("DSEG ROM Start %08X" % dsegRomStart)
+
+		# Calculate initialised data segment end and end of the idata in ROM
+		dsegLen = dsegRamEnd - dsegRamStart
+		dsegRomEnd = dsegRomStart + dsegLen
+
+		# Load the idata into RAM from the appropriate part of the ROM file
+		idaapi.mem2base(file_data[dsegRomStart:dsegRomEnd], dsegRamStart, dsegRamEnd)
+
+		# TODO: Designate the source idata as ROM DATA
+		idaapi.add_segm(0, dsegRomStart, dsegRomEnd, "DATAINIT", "DATA")
+	else:
+		print("No Match")
 
 	"""
 	# ???
