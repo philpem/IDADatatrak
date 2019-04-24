@@ -5,6 +5,8 @@
 
 import idaapi
 import struct
+import re
+from pprint import pprint
 
 FORMAT_NAME="Datatrak 68k"
 
@@ -118,6 +120,31 @@ def do_hardware_regs():
 
 
 
+def doMoveaAddrRefs():
+	print("Converting all MOVEA.L first-args into address references...")
+	for funcea in Functions(0, 0x3FFFF):
+		functionName = GetFunctionName(funcea)
+		#print("FUNC '%s' = %08X" % (functionName, funcea))
+
+		# A "Chunk" is a block of code in a function
+		for (startea, endea) in Chunks(funcea):
+			#print("Chunk %08X -> %08X" % (startea, endea))
+
+			# A "Head" is an instruction inside a chunk
+			for ea in Heads(startea, endea):
+				#print functionName, ":", "0x%08x"%(head), ":", GetDisasm(head)
+
+				# Look for a MOVEA.L instruction with an immediate source
+				if GetMnem(ea) != "movea.l" or get_operand_type(ea, 0) != 5:
+					continue
+
+				# Set
+				op_plain_offset(ea, 0, 0)  # addr, opnum, base
+
+
+
+
+
 def load_file(li, neflags, format):
 	# Check the format we've been asked to load
 	if format != FORMAT_NAME:
@@ -168,6 +195,8 @@ def load_file(li, neflags, format):
 			]
 	sh_reg = [0x00]*len(pattern)
 
+	# TODO: Refactor this to use IDA's internal buffer instead of the file_data array?
+
 	for addr in range(initPC, initPC + 0x100):
 		# shift in next byte
 		sh_reg = sh_reg[1:]
@@ -206,6 +235,100 @@ def load_file(li, neflags, format):
 		idaapi.add_segm(0, dsegRomStart, dsegRomEnd, "DATAINIT", "DATA")
 	else:
 		print("No Match")
+
+	# TODO: Try to identify the boundary between CODE and ROMDATA and move that into a segment
+
+	# Wait for autoanalysis to finish
+	autoWait()
+
+	# Convert all MOVEA source parameters into address references
+	doMoveaAddrRefs()
+
+
+	# TODO: Search for switch-case jump tables
+	oper_re = re.compile(r'\(pc,([ad][0-9]).([bwl])\)')
+	insnStack = []
+	for ea in Heads(0x33B0, 0x33D0):
+		# Decode the instruction and operands
+		insn = {'ea': ea,
+				'disasm': GetDisasm(ea),
+				'mnem': GetMnem(ea),
+				}
+		opnds = []
+		for i in range(3):
+			opnd = {'type': get_operand_type(ea, i), 'opnd': GetOpnd(ea, i), 'value': GetOperandValue(ea, i)}
+			# store non-empty operands only
+			if opnd['type'] != 0:		# FIXME use operand type constants
+				opnds.append(opnd)
+		insn['operands'] = opnds
+
+		# push the instruction onto the stack, limiting the stack size
+		insnStack.append(insn)
+		insnStack = insnStack[-10:]
+
+		# Look for this sequence at the end of the stack:
+		#   ADD.W    d0,d0
+		#   MOVE.W   <table>(pc,d0.w)
+		#   JMP      <table>(pc,d0.w)
+		#
+		if insnStack[-1]['mnem'] == 'jmp' and insnStack[-2]['mnem'].startswith('move.') and insnStack[-3]['mnem'].startswith('add.'):
+			print("*** Potential jumptable sequence found at EOS")
+			pprint(insnStack[-3])
+			pprint(insnStack[-2])
+			pprint(insnStack[-1])
+
+			# Check the argtypes
+			# Jump and move should have identical first argument types
+			if insnStack[-1]['operands'][0]['type'] != 4 or insnStack[-2]['operands'][0]['type'] != 4:
+				continue
+
+			# Add should be rigged to double the value of a register
+			if insnStack[-3]['operands'][0]['type'] != 1 or insnStack[-3]['operands'][1]['type'] != 1:
+				continue
+			if insnStack[-3]['operands'][0]['opnd'] != insnStack[-3]['operands'][1]['opnd']:
+				continue
+
+			# Jumptable address is the offset in the jump instruction's first operand
+			jumptableAddr = insnStack[-1]['operands'][0]['value']
+			# Jump instruction EA
+			jumpinstrAddr = insnStack[-1]['ea']
+			# Jump register
+			jumpReg = insnStack[-3]['operands'][0]['opnd']
+
+			# Is there a subtract instruction above the 'add R,R'?
+			if insnStack[-4]['mnem'].startswith('subi.'):
+				jumpOffset = insnStack[-4]['operands'][0]['value']
+			else:
+				jumpOffset = 0
+
+			print("Jumptable Debug: TADDR %08X, JADDR %08X, OFFSET %d, REGISTER '%s'" % (jumptableAddr, jumpinstrAddr, jumpOffset, jumpReg))
+
+			jtLowerBound = None
+			jtUpperBound = None
+
+			# Hunt backwards for the compare operations (to get the JT bounds)
+			for i in reversed(range(3, 8)):		# 10 - 2
+				curi  = insnStack[-i]
+				previ = insnStack[-(i+1)]
+				if previ['mnem'].startswith('cmpi.'):
+					print("COMPARE value %d" % previ['operands'][0]['value'])
+					if curi['mnem'].startswith('blt.'):
+						jtLowerBound = previ['operands'][0]['value']
+					elif curi['mnem'].startswith('bgt.'):
+						jtUpperBound = previ['operands'][0]['value']
+
+			print("Jumptable Debug: upperbound %s lowerbound %s" % (jtUpperBound, jtLowerBound))
+
+			# TODO: figure out the register size
+
+			# Set jumptable data
+			swInf = switch_info_t()
+			swInf.set_jtable_element_size
+
+	# TODO: use AddCodeXref(?) to link calls where a function address has been copied into an address register
+
+	# TODO: Search for the task table?
+
 
 	"""
 	# ???
