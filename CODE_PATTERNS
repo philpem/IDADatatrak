@@ -1,0 +1,47 @@
+Jumptables:
+
+ROM:000033B0 loc_33B0:                               ; CODE XREF: sub_31B0+1DA↑j
+ROM:000033B0                 cmpi.w  #$62,d0 ; 'b'			Minimum value (BLT skips)
+ROM:000033B4                 blt.w   loc_369A
+ROM:000033B8                 cmpi.w  #$66,d0 ; 'f'			Maximum value (BGT skips)
+ROM:000033BC                 bgt.s   loc_33D6
+ROM:000033BE                 subi.w  #$62,d0 ; 'b'			Offset (subtract from D0)
+ROM:000033C2                 add.w   d0,d0				Double D0 (2 bytes = 1 word per entry)
+ROM:000033C4                 move.w  dword_33CC(pc,d0.w),d0		Get table entry into D0
+ROM:000033C8                 jmp     dword_33CC(pc,d0.w)		Jump
+ROM:000033C8 ; ---------------------------------------------------------------------------
+ROM:000033CC dword_33CC:     dc.l $AE010A, $3C0136
+ROM:000033D4 ; ---------------------------------------------------------------------------
+ROM:000033D4                 bchg    d0,(a0)+
+ROM:000033D6
+
+
+ROM:00003FBE                 move.b  d2,d0
+ROM:00003FC0                 ext.w   d0
+ROM:00003FC2                 blt.w   loc_40CA
+ROM:00003FC6                 cmpi.w  #$1B,d0
+ROM:00003FCA                 bgt.s   loc_400E
+ROM:00003FCC                 add.w   d0,d0
+ROM:00003FCE                 move.w  word_3FD6(pc,d0.w),d0
+ROM:00003FD2                 jmp     word_3FD6(pc,d0.w)
+ROM:00003FD2 ; ---------------------------------------------------------------------------
+ROM:00003FD6 word_3FD6:      dc.w $400
+ROM:00003FD8                 dc.l $480082, $F40400, $F4008C
+ROM:00003FD8                 dcb.l 3,$F400F4
+ROM:00003FD8                 dc.l $F400B4, $F400A6, $F40096
+ROM:00003FD8                 dcb.l 2,$F400F4
+ROM:00003FD8                 dc.l $F400D2, $F400F4
+ROM:0000400C                 dc.b 0, $BE
+
+
+
+
+Jump optimisation:
+
+ROM:00003E00                 movea.l #sub_3BD6,a4
+ROM:00003E06                 movea.l #sub_43E2,a0
+ROM:00003E0C                 move.l  a0,d3
+ROM:00003E0E                 movea.l #sub_3D44,a0
+ROM:00003E14                 move.l  a0,d4
+...
+ROM:00003E3A                 jsr     (a4)
